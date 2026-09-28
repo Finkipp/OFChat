@@ -67,7 +67,7 @@ cp OFChat.desktop ~/.local/share/applications/org.example.OFChat.desktop
 пакетным менеджером. Исходный код распространяется под лицензией MIT.
 
 GitHub Actions запускает тесты и публикует собранный `.rpm` во вкладке
-**Releases** при отправке тега вида `v0.1.0`. Перед новым релизом обновите
+**Releases** при отправке тега вида `v0.1.1`. Перед новым релизом обновите
 `Version` в `packaging/ofchat.spec`, затем создайте и отправьте совпадающий
 тег. Пакет устанавливается командой `sudo dnf install ./ofchat-*.rpm`.
 

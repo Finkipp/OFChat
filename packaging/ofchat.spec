@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name:           ofchat
-Version:        0.1.0
+Version:        0.1.1
 Release:        1%{?dist}
 Summary:        GTK XMPP client for Openfire
 License:        MIT
@@ -33,6 +33,7 @@ python3.11 -m pip install --disable-pip-version-check --no-compile \
     --platform manylinux_2_17_x86_64 \
     --implementation cp --python-version 3.11 --abi cp311 \
     --target %{buildroot}%{_datadir}/ofchat/vendor -r requirements.txt
+rm -rf %{buildroot}%{_datadir}/ofchat/vendor/bin
 find %{buildroot}%{_datadir}/ofchat -type d -name __pycache__ -exec rm -rf '{}' +
 
 %files
@@ -42,5 +43,8 @@ find %{buildroot}%{_datadir}/ofchat -type d -name __pycache__ -exec rm -rf '{}' 
 %{_datadir}/ofchat/
 
 %changelog
+* Mon Sep 28 2026 OFChat contributors - 0.1.1-1
+- Remove build-machine paths from RPM dependencies
+
 * Mon Sep 28 2026 OFChat contributors - 0.1.0-1
 - Initial RPM release

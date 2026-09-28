@@ -37,6 +37,11 @@ jobs:
             --define "_topdir ${GITHUB_WORKSPACE}/.rpmbuild" \
             --define "_sourcedir ${RUNNER_TEMP}" \
             packaging/ofchat.spec
+          REQUIRES="$(rpm -qp --queryformat '[%{REQUIRENAME}\n]' .rpmbuild/RPMS/x86_64/ofchat-*.rpm)"
+          if [[ "$REQUIRES" == *hostedtoolcache* ]]; then
+            echo 'RPM depends on a build-runner Python path' >&2
+            exit 1
+          fi
       - name: Publish RPM in GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
