@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=OFChat
+Comment=XMPP-клиент для Openfire
+Exec=ofchat
+Icon=mail-message-new
+Terminal=false
+Categories=Network;Chat;GTK;
+StartupNotify=true

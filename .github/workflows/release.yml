@@ -1,0 +1,49 @@
+name: Release RPM
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  rpm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run tests
+        run: |
+          python -m pip install -r requirements.txt
+          python -m unittest discover -s tests -v
+      - name: Install RPM build tools
+        run: sudo apt-get update && sudo apt-get install -y rpm
+      - name: Build RPM
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          SPEC_VERSION="$(rpmspec -q --queryformat '%{VERSION}' packaging/ofchat.spec)"
+          test "$VERSION" = "$SPEC_VERSION"
+          git archive --format=tar --prefix="ofchat-${VERSION}/" "$TAG" | gzip -n > "${RUNNER_TEMP}/ofchat-${VERSION}.tar.gz"
+          rpmbuild -bb --nodeps \
+            --define "_topdir ${GITHUB_WORKSPACE}/.rpmbuild" \
+            --define "_sourcedir ${RUNNER_TEMP}" \
+            packaging/ofchat.spec
+      - name: Publish RPM in GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --title "OFChat $GITHUB_REF_NAME" --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" .rpmbuild/RPMS/x86_64/ofchat-*.rpm --clobber

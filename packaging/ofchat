@@ -1,0 +1,3 @@
+#!/bin/sh
+export PYTHONPATH="/usr/share/ofchat/vendor:/usr/share/ofchat${PYTHONPATH:+:$PYTHONPATH}"
+exec /usr/bin/python3 /usr/share/ofchat/main.py "$@"

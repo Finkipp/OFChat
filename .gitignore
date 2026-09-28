@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+*.db
+*.db-*
+certificates.json
+*.tmp
+.env
+.env.*
+.rpmbuild/
