@@ -165,6 +165,12 @@ class Connection:
     def send_message(self, peer, text):
         self._schedule(lambda: self.client.send_message(mto=peer, mbody=text, mtype="chat"))
 
+    def send_messages(self, peers, text):
+        def send_all():
+            for peer in peers:
+                self.client.send_message(mto=peer, mbody=text, mtype="chat")
+        self._schedule(send_all)
+
     def send_attention(self, peer):
         self._schedule(lambda: self.client.plugin["xep_0224"].request_attention(peer))
 

@@ -1,4 +1,5 @@
 import asyncio
+import csv
 import ssl
 import subprocess
 import tempfile
@@ -7,7 +8,7 @@ from pathlib import Path
 
 from chat.certificates import TrustedCertificates, fingerprint, inspect_certificate
 from chat.storage import History
-from chat.xmpp import ChatClient, bare_jid, presence_status
+from chat.xmpp import ChatClient, Connection, bare_jid, presence_status
 
 
 class ChatTests(unittest.TestCase):
@@ -33,6 +34,48 @@ class ChatTests(unittest.TestCase):
         for invalid in ("", "example.org", "alice"):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 bare_jid(invalid)
+
+    def test_history_pages_search_recent_window_and_export(self):
+        with tempfile.TemporaryDirectory() as directory:
+            history = History(Path(directory) / "messages.db")
+            account, peer = "a@example.org", "b@example.org"
+            history.add(account, peer, "in", "Старое сообщение")
+            history.db.execute(
+                "UPDATE messages SET timestamp=datetime('now', '-4 days') WHERE body=?",
+                ("Старое сообщение",),
+            )
+            for body in ("первое", "второе 100%", "третье 100_", "четвёртое"):
+                history.add(account, peer, "out", body)
+            self.assertEqual(len(history.recent(account, peer)), 4)
+            newest, total = history.page(account, peer, page_size=2)
+            older, _ = history.page(account, peer, page=1, page_size=2)
+            self.assertEqual(total, 5)
+            self.assertEqual([row[1] for row in newest], ["третье 100_", "четвёртое"])
+            self.assertEqual([row[1] for row in older], ["первое", "второе 100%"])
+            self.assertEqual(history.page(account, peer, "100%")[1], 1)
+            self.assertEqual(history.page(account, peer, "100_")[1], 1)
+            self.assertEqual(history.page(account, peer, "СТАРОЕ")[1], 1)
+            csv_path = Path(directory) / "conversation.csv"
+            history.export(account, peer, csv_path)
+            with csv_path.open(encoding="utf-8", newline="") as output:
+                records = list(csv.reader(output))
+            self.assertEqual(len(records), 6)
+            self.assertEqual(records[1][1:], [peer, "Старое сообщение"])
+            txt_path = Path(directory) / "conversation.txt"
+            history.export(account, peer, txt_path)
+            self.assertIn("второе 100%", txt_path.read_text(encoding="utf-8"))
+            history.close()
+
+    def test_broadcast_queues_individual_messages(self):
+        connection = Connection(lambda *args: None)
+        sent = []
+        connection.client = type("FakeClient", (), {
+            "send_message": lambda self, **kwargs: sent.append(kwargs),
+        })()
+        connection._schedule = lambda callback: callback()
+        connection.send_messages(["b@example.org", "c@example.org"], "Привет")
+        self.assertEqual([item["mto"] for item in sent], ["b@example.org", "c@example.org"])
+        self.assertTrue(all(item["mtype"] == "chat" for item in sent))
 
     def test_incoming_message_and_attention_events(self):
         events = []

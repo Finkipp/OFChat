@@ -1,7 +1,9 @@
 """Small GTK desktop client for one-to-one XMPP chats."""
 
+import re
 import sys
 from datetime import datetime
+from pathlib import Path
 
 import gi
 
@@ -10,6 +12,7 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 
 from .storage import History
+from .version import __version__
 from .xmpp import Connection, bare_jid
 
 
@@ -28,17 +31,25 @@ class ChatApplication(Gtk.Application):
         self.contact_rows = {}
         self.connected = False
         self.window = None
+        self.tray = None
+        self._held_in_tray = False
+        self._indicator_status = None
 
     def do_startup(self):
         Gtk.Application.do_startup(self)
         action = Gio.SimpleAction.new("open-chat", GLib.VariantType.new("s"))
         action.connect("activate", self._open_notification)
         self.add_action(action)
-        logout = Gio.SimpleAction.new("disconnect", None)
-        logout.connect("activate", self._logout)
-        self.add_action(logout)
-        self.logout_action = logout
-        logout.set_enabled(False)
+        for name, callback in (
+            ("disconnect", self._logout), ("broadcast", self._broadcast),
+            ("history", self._show_history), ("export-chat", self._export_chat),
+            ("about", self._about), ("quit-ofchat", self._quit_app),
+        ):
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", callback)
+            self.add_action(action)
+            if name in ("disconnect", "broadcast", "history", "export-chat"):
+                action.set_enabled(False)
         styles = Gtk.CssProvider()
         styles.load_from_data(b"""
             .presence-dot { font-size: 15px; }
@@ -58,7 +69,7 @@ class ChatApplication(Gtk.Application):
 
     def do_activate(self):
         if self.window:
-            self.window.present()
+            self._show_window()
             return
         self.window = Gtk.ApplicationWindow(application=self, title="OFChat")
         self.window.set_default_size(850, 580)
@@ -67,7 +78,16 @@ class ChatApplication(Gtk.Application):
         self.window.connect("notify::is-active", self._window_active_changed)
         self.header = Gtk.HeaderBar(title="OFChat", show_close_button=True)
         menu = Gio.Menu()
+        files = Gio.Menu()
+        files.append("Экспорт переписки…", "app.export-chat")
+        actions = Gio.Menu()
+        actions.append("Рассылка…", "app.broadcast")
+        actions.append("История…", "app.history")
+        menu.append_submenu("Файл", files)
+        menu.append_submenu("Действия", actions)
+        menu.append("О программе", "app.about")
         menu.append("Отключиться", "app.disconnect")
+        menu.append("Выйти из OFChat", "app.quit-ofchat")
         menu_button = Gtk.MenuButton()
         menu_button.set_tooltip_text("Меню приложения")
         menu_button.set_image(Gtk.Image.new_from_icon_name("open-menu-symbolic", Gtk.IconSize.BUTTON))
@@ -80,6 +100,61 @@ class ChatApplication(Gtk.Application):
         self._build_chat()
         self.stack.set_visible_child_name("login")
         self.window.show_all()
+        self._build_tray()
+
+    def _build_tray(self):
+        menu = Gtk.Menu()
+        self.tray_open = Gtk.MenuItem(label="Показать OFChat")
+        self.tray_open.connect("activate", self._show_window)
+        menu.append(self.tray_open)
+        menu.append(Gtk.SeparatorMenuItem())
+        quit_item = Gtk.MenuItem(label="Выйти")
+        quit_item.connect("activate", self._quit_app)
+        menu.append(quit_item)
+        menu.show_all()
+        self.tray_menu = menu
+        try:
+            gi.require_version("AppIndicator3", "0.1")
+            from gi.repository import AppIndicator3
+            indicator = AppIndicator3.Indicator.new(
+                APP_ID, "mail-message-new", AppIndicator3.IndicatorCategory.COMMUNICATIONS
+            )
+            indicator.set_menu(menu)
+            indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
+            self._indicator_status = AppIndicator3.IndicatorStatus
+            self.tray = indicator
+        except (ImportError, ValueError):
+            # Traditional notification areas still support Gtk.StatusIcon.
+            icon = Gtk.StatusIcon.new_from_icon_name("mail-message-new")
+            icon.set_tooltip_text("OFChat")
+            icon.connect("activate", self._toggle_window)
+            icon.connect("popup-menu", lambda widget, button, time: menu.popup(
+                None, None, Gtk.StatusIcon.position_menu, widget, button, time
+            ))
+            self.tray = icon
+
+    def _show_window(self, *_args):
+        self.window.present()
+        if self._held_in_tray:
+            self.release()
+            self._held_in_tray = False
+
+    def _toggle_window(self, *_args):
+        if self.window.get_visible():
+            self._on_close()
+        else:
+            self._show_window()
+
+    def _update_tray_count(self):
+        total = sum(self.unread.values())
+        if self.tray and hasattr(self.tray, "set_label"):
+            self.tray.set_label(str(total) if total else "", "99+")
+        elif self.tray:
+            self.tray.set_tooltip_text(f"OFChat — непрочитанных: {total}" if total else "OFChat")
+
+    def _set_chat_actions(self, enabled):
+        for name in ("disconnect", "broadcast", "history", "export-chat"):
+            self.lookup_action(name).set_enabled(enabled)
 
     def _build_login(self):
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
@@ -164,6 +239,10 @@ class ChatApplication(Gtk.Application):
         self.peer_jid.get_style_context().add_class("dim-label")
         peer_header.pack_start(self.peer_jid, False, False, 0)
         right.pack_start(peer_header, False, False, 0)
+        preview_note = Gtk.Label(label="Последние 3 дня · до 100 сообщений. Вся переписка: Действия → История", xalign=0)
+        preview_note.get_style_context().add_class("dim-label")
+        preview_note.set_ellipsize(Pango.EllipsizeMode.END)
+        right.pack_start(preview_note, False, False, 0)
         messages_scroll = Gtk.ScrolledWindow()
         messages_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         self.messages_scroll = messages_scroll
@@ -218,10 +297,11 @@ class ChatApplication(Gtk.Application):
             self.connected = True
             self.account = data
             self.header.set_subtitle(data)
-            self.logout_action.set_enabled(True)
+            self._set_chat_actions(True)
             self.stack.set_visible_child_name("chat")
             self.peer = None
             self.unread.clear()
+            self._update_tray_count()
             self.contacts = {peer: (peer, "offline") for peer in self.history.peers(data)}
             self._refresh_contacts()
         elif event == "roster":
@@ -260,7 +340,7 @@ class ChatApplication(Gtk.Application):
                 self.login_button.set_sensitive(True)
         elif event == "disconnected":
             self.connected = False
-            self.logout_action.set_enabled(False)
+            self._set_chat_actions(False)
             self.header.set_subtitle(None)
             self.login_button.set_sensitive(True)
             if self.stack.get_visible_child_name() == "chat" or self.login_status.get_text() == "Подключение…":
@@ -296,6 +376,216 @@ class ChatApplication(Gtk.Application):
         if approved:
             self.login_status.set_text("Подключение с одобренным сертификатом…")
 
+    def _choose_peer(self, title):
+        peers = sorted(set(self.contacts) | set(self.history.peers(self.account)))
+        if not peers:
+            self.header.set_subtitle("Нет переписок для выбора")
+            return None
+        dialog = Gtk.Dialog(title=title, transient_for=self.window, modal=True)
+        dialog.add_button("Отмена", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Выбрать", Gtk.ResponseType.OK)
+        combo = Gtk.ComboBoxText()
+        combo.set_margin_top(16)
+        combo.set_margin_bottom(16)
+        combo.set_margin_start(16)
+        combo.set_margin_end(16)
+        for peer in peers:
+            combo.append(peer, f"{self.contacts.get(peer, (peer,))[0]} · {peer}")
+        combo.set_active_id(self.peer if self.peer in peers else peers[0])
+        dialog.get_content_area().add(combo)
+        dialog.show_all()
+        result = combo.get_active_id() if dialog.run() == Gtk.ResponseType.OK else None
+        dialog.destroy()
+        return result
+
+    def _show_history(self, *_args):
+        peer = self._choose_peer("История переписки")
+        if not peer:
+            return
+        dialog = Gtk.Dialog(title=f"История · {peer}", transient_for=self.window, modal=True)
+        dialog.set_default_size(710, 510)
+        dialog.add_button("Закрыть", Gtk.ResponseType.CLOSE)
+        content = dialog.get_content_area()
+        content.set_spacing(8)
+        content.set_border_width(12)
+        search = Gtk.SearchEntry(placeholder_text="Поиск по тексту сообщений")
+        content.pack_start(search, False, False, 0)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        view = Gtk.TextView(editable=False, cursor_visible=False, wrap_mode=Gtk.WrapMode.WORD_CHAR)
+        view.set_left_margin(12)
+        view.set_right_margin(12)
+        view.set_top_margin(12)
+        scroll.add(view)
+        content.pack_start(scroll, True, True, 0)
+        navigation = Gtk.Box(spacing=8)
+        newer = Gtk.Button(label="← Новее")
+        older = Gtk.Button(label="Старее →")
+        position = Gtk.Label()
+        navigation.pack_start(newer, False, False, 0)
+        navigation.pack_start(position, True, True, 0)
+        navigation.pack_end(older, False, False, 0)
+        content.pack_start(navigation, False, False, 0)
+        current_page = [0]
+
+        def update(*_args):
+            rows, total = self.history.page(self.account, peer, search.get_text(), current_page[0])
+            page_count = max(1, (total + 49) // 50)
+            lines = [
+                f"[{timestamp}] {self.account if direction == 'out' else peer}: {body}"
+                for direction, body, timestamp in rows
+            ]
+            view.get_buffer().set_text("\n\n".join(lines) if lines else "Сообщения не найдены")
+            GLib.idle_add(lambda: scroll.get_vadjustment().set_value(0))
+            position.set_text(f"Страница {current_page[0] + 1} из {page_count} · найдено: {total}")
+            newer.set_sensitive(current_page[0] > 0)
+            older.set_sensitive(current_page[0] + 1 < page_count)
+
+        def change_page(offset):
+            current_page[0] += offset
+            update()
+
+        def search_changed(entry):
+            current_page[0] = 0
+            update()
+
+        newer.connect("clicked", lambda button: change_page(-1))
+        older.connect("clicked", lambda button: change_page(1))
+        search.connect("search-changed", search_changed)
+        update()
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
+
+    def _export_chat(self, *_args):
+        peer = self._choose_peer("Экспорт переписки")
+        if not peer:
+            return
+        chooser = Gtk.FileChooserDialog(
+            title="Экспорт переписки", transient_for=self.window,
+            action=Gtk.FileChooserAction.SAVE,
+        )
+        chooser.add_button("Отмена", Gtk.ResponseType.CANCEL)
+        chooser.add_button("Экспортировать", Gtk.ResponseType.ACCEPT)
+        chooser.set_do_overwrite_confirmation(True)
+        chooser.set_current_name(f"OFChat-{peer.replace('@', '_')}.txt")
+        txt = Gtk.FileFilter()
+        txt.set_name("Текст UTF-8 (*.txt)")
+        txt.add_pattern("*.txt")
+        csv_filter = Gtk.FileFilter()
+        csv_filter.set_name("CSV UTF-8 (*.csv)")
+        csv_filter.add_pattern("*.csv")
+        chooser.add_filter(txt)
+        chooser.add_filter(csv_filter)
+        chooser.set_filter(txt)
+
+        def sync_export_name(widget, property_spec):
+            name = chooser.get_current_name()
+            if name and Path(name).suffix.lower() in (".txt", ".csv"):
+                suffix = ".csv" if chooser.get_filter() == csv_filter else ".txt"
+                if Path(name).suffix.lower() != suffix:
+                    chooser.set_current_name(str(Path(name).with_suffix(suffix)))
+
+        chooser.connect("notify::filter", sync_export_name)
+        if chooser.run() == Gtk.ResponseType.ACCEPT:
+            path = Path(chooser.get_filename())
+            suffix = ".csv" if chooser.get_filter() == csv_filter else ".txt"
+            if path.suffix.lower() != suffix:
+                path = path.with_suffix(suffix) if path.suffix.lower() in (".txt", ".csv") else path.with_name(path.name + suffix)
+            try:
+                if path.exists() and path != Path(chooser.get_filename()):
+                    confirm = Gtk.MessageDialog(
+                        transient_for=self.window, modal=True,
+                        message_type=Gtk.MessageType.QUESTION,
+                        buttons=Gtk.ButtonsType.YES_NO,
+                        text=f"Перезаписать файл {path.name}?",
+                    )
+                    overwrite = confirm.run() == Gtk.ResponseType.YES
+                    confirm.destroy()
+                    if not overwrite:
+                        chooser.destroy()
+                        return
+                self.history.export(self.account, peer, path)
+                self.header.set_subtitle(f"История сохранена: {path.name}")
+            except OSError as exc:
+                self._show_error(f"Не удалось сохранить историю: {exc}")
+        chooser.destroy()
+
+    def _broadcast(self, *_args):
+        dialog = Gtk.Dialog(title="Рассылка", transient_for=self.window, modal=True)
+        dialog.set_default_size(480, 450)
+        dialog.add_button("Отмена", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Отправить", Gtk.ResponseType.OK)
+        content = dialog.get_content_area()
+        content.set_border_width(12)
+        content.set_spacing(8)
+        content.pack_start(Gtk.Label(label="Получатели", xalign=0), False, False, 0)
+        contacts_scroll = Gtk.ScrolledWindow()
+        contacts_scroll.set_size_request(-1, 140)
+        checklist = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        choices = {}
+        for jid, (name, status) in sorted(self.contacts.items()):
+            check = Gtk.CheckButton(label=f"{name} · {jid}")
+            checklist.pack_start(check, False, False, 0)
+            choices[jid] = check
+        contacts_scroll.add(checklist)
+        content.pack_start(contacts_scroll, False, False, 0)
+        additional = Gtk.Entry(placeholder_text="Дополнительные JID через запятую (необязательно)")
+        content.pack_start(additional, False, False, 0)
+        content.pack_start(Gtk.Label(label="Сообщение", xalign=0), False, False, 0)
+        message_scroll = Gtk.ScrolledWindow()
+        message_scroll.set_min_content_height(110)
+        text_view = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR)
+        message_scroll.add(text_view)
+        content.pack_start(message_scroll, True, True, 0)
+        error = Gtk.Label(xalign=0)
+        content.pack_start(error, False, False, 0)
+        dialog.show_all()
+        while dialog.run() == Gtk.ResponseType.OK:
+            buffer = text_view.get_buffer()
+            body = buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True).strip()
+            try:
+                peers = {jid for jid, check in choices.items() if check.get_active()}
+                peers.update(bare_jid(jid) for jid in re.split(r"[,;\s]+", additional.get_text().strip()) if jid)
+                if len(peers) < 2:
+                    raise ValueError("Выберите не менее двух получателей")
+                if not body:
+                    raise ValueError("Введите сообщение")
+                if not self.connected:
+                    raise RuntimeError("Нет подключения к серверу")
+                self.connection.send_messages(sorted(peers), body)
+            except (ValueError, RuntimeError) as exc:
+                error.set_text(str(exc))
+                continue
+            for peer in peers:
+                self.history.add(self.account, peer, "out", body)
+                self._ensure_peer(peer)
+                if self.peer == peer:
+                    self._append("out", body)
+            self.header.set_subtitle(f"Рассылка: {len(peers)} получателей")
+            break
+        dialog.destroy()
+
+    def _about(self, *_args):
+        dialog = Gtk.AboutDialog(
+            transient_for=self.window, modal=True, program_name="OFChat",
+            version=__version__, authors=["Finkipp", "GPT-6 Sol"],
+            website="https://github.com/Finkipp/OFChat",
+            license_type=Gtk.License.MIT_X11,
+        )
+        dialog.set_logo_icon_name("mail-message-new")
+        dialog.run()
+        dialog.destroy()
+
+    def _show_error(self, message):
+        dialog = Gtk.MessageDialog(
+            transient_for=self.window, modal=True,
+            message_type=Gtk.MessageType.ERROR, buttons=Gtk.ButtonsType.CLOSE,
+            text=message,
+        )
+        dialog.run()
+        dialog.destroy()
+
     def _notify(self, peer, text, urgent=False):
         notification = Gio.Notification.new(self.contacts.get(peer, (peer,))[0])
         notification.set_body(text)
@@ -306,7 +596,7 @@ class ChatApplication(Gtk.Application):
 
     def _open_notification(self, action, parameter):
         peer = parameter.get_string()
-        self.activate()
+        self._show_window()
         self._ensure_peer(peer)
         self._open_peer(peer)
 
@@ -357,10 +647,12 @@ class ChatApplication(Gtk.Application):
     def _increment_unread(self, peer):
         self.unread[peer] = self.unread.get(peer, 0) + 1
         self._update_unread_badge(peer)
+        self._update_tray_count()
 
     def _mark_read(self, peer):
         if peer and self.unread.pop(peer, None):
             self._update_unread_badge(peer)
+            self._update_tray_count()
         if peer:
             self.withdraw_notification(peer)
 
@@ -451,16 +743,34 @@ class ChatApplication(Gtk.Application):
 
     def _logout(self, *_args):
         self.connected = False
-        self.logout_action.set_enabled(False)
+        self._set_chat_actions(False)
         self.header.set_subtitle(None)
         self.connection.stop()
         self.login_button.set_sensitive(True)
         self.stack.set_visible_child_name("login")
 
     def _on_close(self, *_args):
+        if self.tray and not (isinstance(self.tray, Gtk.StatusIcon) and not self.tray.is_embedded()):
+            self.hold()
+            self._held_in_tray = True
+            self.window.hide()
+            return True
+        self._quit_app()
+        return True
+
+    def _quit_app(self, *_args):
         self.connection.stop()
-        self.history.close()
-        return False
+        if self.history:
+            self.history.close()
+            self.history = None
+        if self._indicator_status:
+            self.tray.set_status(self._indicator_status.PASSIVE)
+        elif self.tray:
+            self.tray.set_visible(False)
+        if self._held_in_tray:
+            self.release()
+            self._held_in_tray = False
+        self.quit()
 
 
 def main():

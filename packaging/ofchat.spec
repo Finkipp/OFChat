@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name:           ofchat
-Version:        0.1.1
+Version:        0.2.0
 Release:        1%{?dist}
 Summary:        GTK XMPP client for Openfire
 License:        MIT
@@ -11,6 +11,7 @@ BuildArch:      x86_64
 Requires:       python3 >= 3.11
 Requires:       python3-gobject-base
 Requires:       gtk3
+Requires:       libappindicator-gtk3
 
 %description
 OFChat is a desktop XMPP client for Openfire with local message history,
@@ -43,6 +44,9 @@ find %{buildroot}%{_datadir}/ofchat -type d -name __pycache__ -exec rm -rf '{}' 
 %{_datadir}/ofchat/
 
 %changelog
+* Mon Sep 28 2026 OFChat contributors - 0.2.0-1
+- Add tray, broadcast, paged searchable history and conversation export
+
 * Mon Sep 28 2026 OFChat contributors - 0.1.1-1
 - Remove build-machine paths from RPM dependencies
 
