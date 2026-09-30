@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=OFChat
+Name=Quark
 Comment=XMPP-клиент для Openfire
-Exec=ofchat
-Icon=mail-message-new
+Exec=quark
+Icon=org.example.Quark
 Terminal=false
 Categories=Network;Chat;GTK;
 StartupNotify=true

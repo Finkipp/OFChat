@@ -30,14 +30,14 @@ jobs:
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
           VERSION="${TAG#v}"
-          SPEC_VERSION="$(rpmspec -q --queryformat '%{VERSION}' packaging/ofchat.spec)"
+          SPEC_VERSION="$(rpmspec -q --queryformat '%{VERSION}' packaging/quark.spec)"
           test "$VERSION" = "$SPEC_VERSION"
-          git archive --format=tar --prefix="ofchat-${VERSION}/" "$TAG" | gzip -n > "${RUNNER_TEMP}/ofchat-${VERSION}.tar.gz"
+          git archive --format=tar --prefix="quark-${VERSION}/" "$TAG" | gzip -n > "${RUNNER_TEMP}/quark-${VERSION}.tar.gz"
           rpmbuild -bb --nodeps \
             --define "_topdir ${GITHUB_WORKSPACE}/.rpmbuild" \
             --define "_sourcedir ${RUNNER_TEMP}" \
-            packaging/ofchat.spec
-          REQUIRES="$(rpm -qp --queryformat '[%{REQUIRENAME}\n]' .rpmbuild/RPMS/x86_64/ofchat-*.rpm)"
+            packaging/quark.spec
+          REQUIRES="$(rpm -qp --queryformat '[%{REQUIRENAME}\n]' .rpmbuild/RPMS/x86_64/quark-*.rpm)"
           if [[ "$REQUIRES" == *hostedtoolcache* ]]; then
             echo 'RPM depends on a build-runner Python path' >&2
             exit 1
@@ -49,6 +49,6 @@ jobs:
         run: |
           set -euo pipefail
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" --title "OFChat $GITHUB_REF_NAME" --generate-notes
+            gh release create "$GITHUB_REF_NAME" --title "Quark $GITHUB_REF_NAME" --generate-notes
           fi
-          gh release upload "$GITHUB_REF_NAME" .rpmbuild/RPMS/x86_64/ofchat-*.rpm --clobber
+          gh release upload "$GITHUB_REF_NAME" .rpmbuild/RPMS/x86_64/quark-*.rpm --clobber

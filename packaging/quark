@@ -1,0 +1,3 @@
+#!/bin/sh
+export PYTHONPATH="/usr/share/quark/vendor:/usr/share/quark${PYTHONPATH:+:$PYTHONPATH}"
+exec /usr/bin/python3 /usr/share/quark/main.py "$@"

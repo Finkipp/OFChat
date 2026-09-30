@@ -1,17 +1,43 @@
 import asyncio
 import csv
+import sqlite3
 import ssl
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 
+from slixmpp import JID
+
+from chat.accounts import Preferences
+from chat.attachments import FileStore
 from chat.certificates import TrustedCertificates, fingerprint, inspect_certificate
+from chat.formatting import blocks, inline_markup
 from chat.storage import History
-from chat.xmpp import ChatClient, Connection, bare_jid, presence_status
+from chat.xmpp import MAX_FILE, ChatClient, Connection, bare_jid, presence_status
 
 
 class ChatTests(unittest.TestCase):
+    def test_existing_history_is_migrated_without_losing_messages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "old.db"
+            db = sqlite3.connect(path)
+            db.execute("""CREATE TABLE messages (
+                id INTEGER PRIMARY KEY, account TEXT NOT NULL, peer TEXT NOT NULL,
+                direction TEXT NOT NULL, body TEXT NOT NULL,
+                timestamp TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+            )""")
+            db.execute("INSERT INTO messages(account, peer, direction, body) VALUES (?,?,?,?)",
+                       ("alice@example.org", "bob@example.org", "in", "Старая переписка"))
+            db.commit()
+            db.close()
+            history = History(path)
+            rows, total = history.conversation("alice@example.org", "bob@example.org")
+            self.assertEqual(total, 1)
+            self.assertEqual(rows[0][2], "Старая переписка")
+            history.close()
+
     def test_history_is_persistent_and_separated_by_account(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "history.db"
@@ -69,13 +95,21 @@ class ChatTests(unittest.TestCase):
     def test_broadcast_queues_individual_messages(self):
         connection = Connection(lambda *args: None)
         sent = []
+        class FakeMessage(dict):
+            def send(self):
+                sent.append(self)
+
         connection.client = type("FakeClient", (), {
-            "send_message": lambda self, **kwargs: sent.append(kwargs),
+            "make_message": lambda self, **kwargs: FakeMessage(kwargs),
         })()
         connection._schedule = lambda callback: callback()
-        connection.send_messages(["b@example.org", "c@example.org"], "Привет")
+        connection.send_messages([
+            ("b@example.org", "id-b"), ("c@example.org", "id-c")
+        ], "Привет")
         self.assertEqual([item["mto"] for item in sent], ["b@example.org", "c@example.org"])
+        self.assertEqual([item["id"] for item in sent], ["id-b", "id-c"])
         self.assertTrue(all(item["mtype"] == "chat" for item in sent))
+        self.assertTrue(all(item["request_receipt"] for item in sent))
 
     def test_incoming_message_and_attention_events(self):
         events = []
@@ -84,17 +118,122 @@ class ChatTests(unittest.TestCase):
         message["from"] = "bob@example.org/desktop"
         message["type"] = "chat"
         message["body"] = "Привет"
+        message["markable"] = True
         client._on_message(message)
         client._on_attention(message)
+        self.assertEqual(events[0][0], "message")
+        self.assertEqual(events[0][1][:2], ("bob@example.org", "Привет"))
+        self.assertTrue(events[0][1][2])
+        self.assertEqual(events[1], ("attention", "bob@example.org"))
+
+    def test_file_offer_authorization_and_received_chat_states(self):
+        import hashlib
+
+        events = []
+        client = ChatClient("alice@example.org", "password", lambda *args: events.append(args))
+        client.init_plugins()
+        message = client.Message()
+        message["from"] = "bob@example.org/desktop"
+        message["quark_file"]["sid"] = "transfer-1"
+        message["quark_file"]["filename"] = "image.png"
+        message["quark_file"]["size"] = "5"
+        message["quark_file"]["sha256"] = hashlib.sha256(b"image").hexdigest()
+        client._on_message(message)
+        self.assertTrue(client._authorize_file(None, "transfer-1", JID("bob@example.org/desktop"), None))
+        self.assertFalse(client._authorize_file(None, "transfer-1", JID("evil@example.org"), None))
+        oversized = client.Message()
+        oversized["from"] = "bob@example.org/desktop"
+        oversized["quark_file"]["sid"] = "too-big"
+        oversized["quark_file"]["filename"] = "huge.bin"
+        oversized["quark_file"]["size"] = str(MAX_FILE + 1)
+        client._on_message(oversized)
+        self.assertNotIn("too-big", client.pending_files)
+
+        class Stream:
+            sid = "transfer-1"
+
+            async def gather(self, **kwargs):
+                return b"image"
+
+        client.loop.run_until_complete(client._receive_file(Stream(), client.pending_files["transfer-1"]))
+        self.assertEqual(events[-1][0], "file_received")
+        self.assertEqual(events[-1][1][:2], ("bob@example.org", "image.png"))
+        state = client.Message()
+        state["from"] = "bob@example.org/desktop"
+        state["chat_state"] = "composing"
+        client._on_chatstate(state)
+        self.assertEqual(events[-1], ("chatstate", ("bob@example.org", "composing")))
+
+    def test_delivery_receipt_and_read_marker(self):
+        events = []
+        client = ChatClient("alice@example.org", "password", lambda *args: events.append(args))
+        client.init_plugins()
+        receipt = client.Message()
+        receipt["from"] = "bob@example.org/desktop"
+        receipt["receipt"] = "message-1"
+        client._on_receipt(receipt)
+        displayed = client.Message()
+        displayed["from"] = "bob@example.org/desktop"
+        displayed["displayed"]["id"] = "message-1"
+        client._on_displayed(displayed)
         self.assertEqual(events, [
-            ("message", ("bob@example.org", "Привет")),
-            ("attention", "bob@example.org"),
+            ("delivery", ("bob@example.org", "message-1", "delivered")),
+            ("delivery", ("bob@example.org", "message-1", "read")),
         ])
 
     def test_presence_status_accounts_for_all_resources(self):
         self.assertEqual(presence_status({}), "offline")
         self.assertEqual(presence_status({"phone": {"show": "xa"}}), "away")
         self.assertEqual(presence_status({"pc": {"show": "away"}, "phone": {"show": ""}}), "online")
+
+    def test_formatting_escapes_html_and_parses_code_and_links(self):
+        self.assertEqual(
+            inline_markup('**Привет** *мир* `<tag>` [сайт](https://example.org?a=1&b=2)'),
+            '<b>Привет</b> <i>мир</i> <span font_family="monospace">&lt;tag&gt;</span> '
+            '<a href="https://example.org?a=1&amp;b=2">сайт</a>',
+        )
+        self.assertEqual(
+            blocks('текст\n```py\nprint("hi")\n```\nещё'),
+            [("text", "", "текст"), ("code", "py", 'print("hi")'), ("text", "", "ещё")],
+        )
+        self.assertIn("javascript:alert", inline_markup("[text](javascript:alert(1))"))
+        self.assertNotIn("<a href", inline_markup("[text](javascript:alert(1))"))
+
+    def test_delivery_read_and_file_expiry_preserve_existing_messages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = FileStore(root / "files")
+            original = root / "original.png"
+            original.write_bytes(b"png data")
+            path, expiry = store.save(original.name, original.read_bytes())
+            history = History(root / "history.db")
+            history.add("a@server", "b@server", "out", "image.png", stanza_id="id-1",
+                        status="pending", kind="file", attachment=str(path), expires_at=expiry)
+            history.set_status("a@server", "b@server", "id-1", "delivered")
+            history.set_status("a@server", "b@server", "id-1", "read")
+            history.set_status("a@server", "b@server", "id-1", "failed")
+            rows, total = history.conversation("a@server", "b@server")
+            self.assertEqual((total, rows[0][5]), (1, "read"))
+            self.assertEqual(history.expire_attachments(
+                store.directory, datetime.now() + timedelta(days=2)
+            ), 1)
+            self.assertFalse(path.exists())
+            self.assertEqual(original.read_bytes(), b"png data")
+            rows, _ = history.conversation("a@server", "b@server")
+            self.assertIsNone(rows[0][6])
+            history.close()
+
+    def test_preferences_store_no_password_and_manage_autostart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = Preferences(root / "account.json", root / "autostart.desktop")
+            settings.save("alice@example.org", "server", 5222, True)
+            self.assertEqual(settings.load()["jid"], "alice@example.org")
+            self.assertNotIn("password", settings.path.read_text(encoding="utf-8"))
+            settings.set_autostart(True)
+            self.assertIn("Exec=", settings.autostart.read_text(encoding="utf-8"))
+            settings.set_autostart(False)
+            self.assertFalse(settings.autostart.exists())
 
     def test_self_signed_starttls_certificate_can_be_inspected_and_pinned(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -160,6 +299,12 @@ class ChatTests(unittest.TestCase):
                     writer.close()
                     await writer.wait_closed()
 
+            try:
+                old_loop = asyncio.get_event_loop()
+            except RuntimeError:
+                old_loop = None
+            if old_loop and not old_loop.is_running():
+                old_loop.close()
             asyncio.run(check())
 
 

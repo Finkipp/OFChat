@@ -10,3 +10,5 @@ certificates.json
 .env
 .env.*
 .rpmbuild/
+# Keep the modified pre-rename shortcut local.
+OFChat.desktop
