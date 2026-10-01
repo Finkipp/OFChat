@@ -2,6 +2,10 @@ plugins {
     id("com.android.application")
 }
 
+configurations.configureEach {
+    exclude(group = "xpp3", module = "xpp3")
+}
+
 android {
     namespace = "org.example.quark.android"
     compileSdk = 35
