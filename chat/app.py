@@ -377,9 +377,11 @@ class ChatApplication(Gtk.Application):
             self.login_status.set_text(str(exc))
             return
         warning = None
+        secret_saved = False
         try:
             if self.remember_check.get_active():
                 store_password(jid, password)
+                secret_saved = True
                 self.preferences.save(jid, host, port, self.autostart_check.get_active())
                 self.preferences.set_autostart(self.autostart_check.get_active())
             else:
@@ -392,7 +394,8 @@ class ChatApplication(Gtk.Application):
                 self.preferences.path.unlink(missing_ok=True)
                 self.preferences.set_autostart(False)
         except (RuntimeError, OSError, GLib.Error) as exc:
-            warning = f"Пароль не сохранён в ключнице: {exc}"
+            warning = ("Не удалось сохранить настройки: " if secret_saved else
+                       "Пароль не сохранён в ключнице: ") + str(exc)
             try:
                 self.preferences.save(jid, host, port, False)
                 self.preferences.set_autostart(False)
@@ -416,7 +419,7 @@ class ChatApplication(Gtk.Application):
         if event == "connected":
             self.connected = True
             self.account = data
-            self.header.set_subtitle(f"{data} · пароль не сохранён" if self._login_warning else data)
+            self.header.set_subtitle(f"{data} · сохранение входа недоступно" if self._login_warning else data)
             self._set_chat_actions(True)
             self.stack.set_visible_child_name("chat")
             self.peer = None

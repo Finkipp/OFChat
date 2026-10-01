@@ -1,4 +1,4 @@
-name: Release RPM
+name: Release RPM and APK
 
 on:
   push:
@@ -52,3 +52,41 @@ jobs:
             gh release create "$GITHUB_REF_NAME" --title "Quark $GITHUB_REF_NAME" --generate-notes
           fi
           gh release upload "$GITHUB_REF_NAME" .rpmbuild/RPMS/x86_64/quark-*.rpm --clobber
+
+  android:
+    needs: rpm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: ''
+          log-accepted-android-sdk-licenses: false
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Install Android platform
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Build signed APK
+        env:
+          QUARK_ANDROID_KEYSTORE_BASE64: ${{ secrets.QUARK_ANDROID_KEYSTORE_BASE64 }}
+          QUARK_ANDROID_STORE_PASSWORD: ${{ secrets.QUARK_ANDROID_STORE_PASSWORD }}
+          QUARK_ANDROID_KEY_PASSWORD: ${{ secrets.QUARK_ANDROID_STORE_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$QUARK_ANDROID_KEYSTORE_BASE64"
+          test -n "$QUARK_ANDROID_STORE_PASSWORD"
+          export QUARK_ANDROID_KEYSTORE="${RUNNER_TEMP}/quark-release.p12"
+          printf '%s' "$QUARK_ANDROID_KEYSTORE_BASE64" | base64 -d > "$QUARK_ANDROID_KEYSTORE"
+          gradle -p android :app:assembleRelease --no-daemon
+          install -m 644 android/app/build/outputs/apk/release/app-release.apk \
+            "${RUNNER_TEMP}/quark-android-${GITHUB_REF_NAME}.apk"
+      - name: Publish signed APK in GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" "${RUNNER_TEMP}/quark-android-${GITHUB_REF_NAME}.apk" --clobber

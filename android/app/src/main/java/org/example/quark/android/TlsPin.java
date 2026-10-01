@@ -83,7 +83,7 @@ final class TlsPin {
             }
             out.write("<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>".getBytes(StandardCharsets.UTF_8));
             out.flush();
-            if (!readUntil(in, "/>").contains("proceed")) {
+            if (!readUntil(in, ">").contains("proceed")) {
                 throw new IllegalStateException("Openfire rejected STARTTLS");
             }
             SSLContext inspection = SSLContext.getInstance("TLS");

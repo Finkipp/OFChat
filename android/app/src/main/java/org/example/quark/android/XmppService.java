@@ -224,7 +224,9 @@ public final class XmppService extends Service {
 
     private void refreshRoster() throws Exception {
         Roster roster = Roster.getInstanceFor(xmpp);
-        roster.reloadAndWait();
+        try {
+            roster.reloadAndWait();
+        } catch (Exception ignored) { /* Show cached contacts even if a roster request fails. */ }
         Set<String> added = new HashSet<>();
         List<Contact> updated = new ArrayList<>();
         updated.add(new Contact(account, "Избранное"));
@@ -302,7 +304,7 @@ public final class XmppService extends Service {
         connected = online;
         Listener current = listener;
         if (current != null) main.post(() -> current.onState(text, online));
-        if (online) getSystemService(NotificationManager.class).notify(1,
+        getSystemService(NotificationManager.class).notify(1,
                 notification(STATUS_CHANNEL, "Quark", text, null));
     }
 

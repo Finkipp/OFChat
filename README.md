@@ -22,7 +22,9 @@ Message Carbons там, где это поддерживает сервер. У�
 
 APK собирается через Android Studio либо командой `gradle -p android :app:assembleDebug`.
 Сборка проверяется в GitHub Actions; подписанный APK публикуется вместе с RPM
-во вкладке Releases.
+во вкладке Releases. Для следующих релизов используется тот же ключ подписи;
+его резервная копия и пароль находятся у владельца репозитория в
+`~/.local/share/quark/android-signing/` (не добавляются в Git).
 
 ## Установка и запуск
 
@@ -99,6 +101,7 @@ Secret Service (не в JSON); JID и адрес — в `~/.config/quark/account
 
 Тесты: `.venv/bin/python -m unittest discover -s tests -v` (для TLS-теста
 нужна утилита `openssl`). Пакет собирается из `packaging/quark.spec`.
-После изменения `Version` отправка соответствующего тега (`v0.3.1` и т. п.)
-запускает GitHub Actions: тесты, сборку и публикацию RPM в Releases.
+После изменения `Version` и Android `versionName` отправка соответствующего
+тега (`v0.3.1` и т. п.) запускает GitHub Actions: тесты, сборку и публикацию
+RPM и подписанного APK в Releases.
 Лицензия — MIT.
