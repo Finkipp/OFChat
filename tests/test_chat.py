@@ -55,6 +55,16 @@ class ChatTests(unittest.TestCase):
             self.assertEqual(len(history.recent("c@example.org", "b@example.org")), 1)
             history.close()
 
+    def test_favorites_self_message_can_be_deduplicated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            history = History(Path(directory) / "self.db")
+            history.add("alice@example.org", "alice@example.org", "out", "Заметка",
+                        stanza_id="self-1")
+            self.assertTrue(history.has_message("alice@example.org", "alice@example.org", "self-1"))
+            self.assertTrue(history.has_outgoing("alice@example.org", "self-1"))
+            self.assertFalse(history.has_message("alice@example.org", "alice@example.org", "other-1"))
+            history.close()
+
     def test_jid_validation_and_resource_normalization(self):
         self.assertEqual(bare_jid(" alice@example.org/phone "), "alice@example.org")
         for invalid in ("", "example.org", "alice"):
@@ -180,6 +190,21 @@ class ChatTests(unittest.TestCase):
             ("delivery", ("bob@example.org", "message-1", "delivered")),
             ("delivery", ("bob@example.org", "message-1", "read")),
         ])
+
+    def test_carbon_from_second_device_reaches_local_history_handler(self):
+        events = []
+        client = ChatClient("alice@example.org", "password", lambda *args: events.append(args))
+        client.init_plugins()
+        forwarded = client.Message()
+        forwarded["from"] = "bob@example.org/mobile"
+        forwarded["body"] = "С телефона"
+        forwarded["type"] = "chat"
+        envelope = client.Message()
+        envelope["from"] = "alice@example.org"
+        envelope["carbon_received"] = forwarded
+        client._on_carbon_received(envelope)
+        self.assertEqual(events[-1][0], "message")
+        self.assertEqual(events[-1][1][:2], ("bob@example.org", "С телефона"))
 
     def test_presence_status_accounts_for_all_resources(self):
         self.assertEqual(presence_status({}), "offline")

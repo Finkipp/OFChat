@@ -12,3 +12,8 @@ certificates.json
 .rpmbuild/
 # Keep the modified pre-rename shortcut local.
 OFChat.desktop
+android/.gradle/
+android/.idea/
+android/local.properties
+android/**/build/
+*.jks

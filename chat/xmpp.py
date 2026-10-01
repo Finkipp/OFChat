@@ -56,6 +56,7 @@ class ChatClient(ClientXMPP):
         self.register_plugin("xep_0333")
         self.register_plugin("xep_0047")
         self.register_plugin("xep_0085")
+        self.register_plugin("xep_0280")
         register_stanza_plugin(Message, FileOffer)
         self.pending_files = {}
         self.add_event_handler("ibb_stream_start", self._on_file_stream)
@@ -66,6 +67,8 @@ class ChatClient(ClientXMPP):
         self.add_event_handler("marker_received", self._on_receipt)
         self.add_event_handler("marker_displayed", self._on_displayed)
         self.add_event_handler("chatstate", self._on_chatstate)
+        self.add_event_handler("carbon_received", self._on_carbon_received)
+        self.add_event_handler("carbon_sent", self._on_carbon_sent)
         self.add_event_handler("attention", self._on_attention)
         self.add_event_handler("failed_auth", self._failed_auth)
         self.add_event_handler("disconnected", self._disconnected)
@@ -86,6 +89,10 @@ class ChatClient(ClientXMPP):
     async def _on_session(self, event):
         self.plugin["xep_0047"].api.register(self._authorize_file, "authorized", default=True)
         self.send_presence()
+        try:
+            await self.plugin["xep_0280"].enable(timeout=10)
+        except Exception:
+            pass  # Older servers may not support XEP-0280.
         try:
             await self.get_roster(timeout=15)
         except Exception as exc:
@@ -121,6 +128,18 @@ class ChatClient(ClientXMPP):
             return
         markable_id = str(message["id"]) if message["markable"] else ""
         self.emit("message", (message["from"].bare, str(message["body"]), markable_id))
+
+    def _on_carbon_received(self, envelope):
+        message = envelope["carbon_received"]
+        if isinstance(message, Message):
+            self._on_message(message)
+
+    def _on_carbon_sent(self, envelope):
+        message = envelope["carbon_sent"]
+        if isinstance(message, Message) and message["type"] in ("chat", "normal") and message["body"]:
+            if message["quark_file"]["sid"]:
+                return
+            self.emit("carbon_sent", (message["to"].bare, str(message["body"]), str(message["id"])))
 
     def _on_message_error(self, message):
         self.emit("delivery", (message["from"].bare, str(message["id"]), "failed"))

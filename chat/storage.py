@@ -73,6 +73,18 @@ class History:
             )
         return ids
 
+    def has_outgoing(self, account, stanza_id):
+        return bool(self.db.execute(
+            """SELECT 1 FROM messages WHERE account=? AND peer=? AND direction='out'
+            AND stanza_id=? LIMIT 1""", (account, account, stanza_id)
+        ).fetchone())
+
+    def has_message(self, account, peer, stanza_id):
+        return bool(stanza_id and self.db.execute(
+            """SELECT 1 FROM messages WHERE account=? AND peer=?
+            AND stanza_id=? LIMIT 1""", (account, peer, stanza_id)
+        ).fetchone())
+
     def conversation(self, account, peer, query="", page=0, page_size=100):
         """One chronological page; page zero is the newest."""
         if page < 0 or page_size < 1:

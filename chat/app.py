@@ -30,6 +30,7 @@ class ChatApplication(Gtk.Application):
         self.history = None
         self.connection = Connection(self._from_network)
         self.account = None
+        self._login_warning = None
         self.peer = None
         self.contacts = {}
         self.unread = {}
@@ -139,8 +140,9 @@ class ChatApplication(Gtk.Application):
             self.port_entry.set_text(str(saved.get("port", 5222)))
             try:
                 password = load_password(saved["jid"])
-            except (RuntimeError, GLib.Error):
+            except (RuntimeError, GLib.Error) as exc:
                 password = None
+                self.login_status.set_text(f"Ключница недоступна; введите пароль вручную: {exc}")
             if password:
                 self.password_entry.set_text(password)
                 self.remember_check.set_active(True)
@@ -371,6 +373,11 @@ class ChatApplication(Gtk.Application):
             if not password:
                 raise ValueError("Введите пароль")
             host = self.host_entry.get_text().strip()
+        except ValueError as exc:
+            self.login_status.set_text(str(exc))
+            return
+        warning = None
+        try:
             if self.remember_check.get_active():
                 store_password(jid, password)
                 self.preferences.save(jid, host, port, self.autostart_check.get_active())
@@ -384,13 +391,22 @@ class ChatApplication(Gtk.Application):
                         pass
                 self.preferences.path.unlink(missing_ok=True)
                 self.preferences.set_autostart(False)
+        except (RuntimeError, OSError, GLib.Error) as exc:
+            warning = f"Пароль не сохранён в ключнице: {exc}"
+            try:
+                self.preferences.save(jid, host, port, False)
+                self.preferences.set_autostart(False)
+            except OSError:
+                pass
+        try:
             self.connection.start(jid, password, host or None, port)
-        except (ValueError, RuntimeError, OSError, GLib.Error) as exc:
+        except (ValueError, RuntimeError) as exc:
             self.login_status.set_text(str(exc))
             return
         self.account = jid
+        self._login_warning = warning
         self.password_entry.set_text("")
-        self.login_status.set_text("Подключение…")
+        self.login_status.set_text("Подключение…" + (f"\n{warning}" if warning else ""))
         self.login_button.set_sensitive(False)
 
     def _from_network(self, event, data):
@@ -400,7 +416,7 @@ class ChatApplication(Gtk.Application):
         if event == "connected":
             self.connected = True
             self.account = data
-            self.header.set_subtitle(data)
+            self.header.set_subtitle(f"{data} · пароль не сохранён" if self._login_warning else data)
             self._set_chat_actions(True)
             self.stack.set_visible_child_name("chat")
             self.peer = None
@@ -409,14 +425,18 @@ class ChatApplication(Gtk.Application):
             self.unread.clear()
             self._update_tray_count()
             self.contacts = {peer: (peer, "offline", ()) for peer in self.history.peers(data)}
+            self.contacts[data] = ("Избранное", "online", ("Личное",))
             self._refresh_contacts()
         elif event == "roster":
             self.contacts.update(data)
             if self.connected:
+                self.contacts[self.account] = ("Избранное", "online", ("Личное",))
                 self._refresh_contacts()
         elif event == "message":
             peer, body, stanza_id = data
             if not self.account:
+                return False
+            if self.history.has_message(self.account, peer, stanza_id):
                 return False
             self.history.add(self.account, peer, "in", body, stanza_id=stanza_id or None)
             self._ensure_peer(peer)
@@ -428,6 +448,15 @@ class ChatApplication(Gtk.Application):
                 self._increment_unread(peer)
             if not self.window.is_active():
                 self._notify(peer, body)
+        elif event == "carbon_sent":
+            peer, body, stanza_id = data
+            if not self.account or self.history.has_message(self.account, peer, stanza_id):
+                return False
+            self.history.add(self.account, peer, "out", body,
+                             stanza_id=stanza_id or None, status="unknown")
+            self._ensure_peer(peer)
+            if self.peer == peer:
+                self._render_conversation()
         elif event == "attention":
             peer = data
             self._ensure_peer(peer)

@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name:           quark
-Version:        0.3.0
+Version:        0.3.1
 Release:        1%{?dist}
 Summary:        GTK XMPP client for Openfire
 License:        MIT
@@ -52,6 +52,9 @@ find %{buildroot}%{_datadir}/quark -type d -name __pycache__ -exec rm -rf '{}' +
 %{_datadir}/quark/
 
 %changelog
+* Thu Oct 01 2026 Quark contributors - 0.3.1-1
+- Support favorites and multi-device message carbons; tolerate keyring errors
+
 * Tue Sep 29 2026 Quark contributors - 0.3.0-1
 - Rename OFChat to Quark; rich messages, file transfer, receipts and groups
 
